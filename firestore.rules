@@ -1,0 +1,82 @@
+rules_version = '2';
+service cloud.firestore {
+ match /databases/{database}/documents {
+  function signed() { return request.auth != null; }
+  function admin() { return signed() && request.auth.uid == 'meaguwyLbiTWV1jApLftMAUd3Xu2'; }
+  function own(data) { return signed() && data.uid == request.auth.uid; }
+  function exam(e) { return get(/databases/$(database)/documents/exams/$(e)).data; }
+  function open(e) {
+   let x = exam(e);
+   return x.status == 'active' && x.config.enabled == true && x.config.startsAt != null
+    && request.time.toMillis() >= x.config.startsAt
+    && (x.config.closesAt == null || request.time.toMillis() < x.config.closesAt);
+  }
+  function bound(e, id) {
+   return signed()
+    && getAfter(/databases/$(database)/documents/exams/$(e)/locks/$(id)).data.uid == request.auth.uid
+    && getAfter(/databases/$(database)/documents/exams/$(e)/sessions/$(request.auth.uid)).data.employeeId == id;
+  }
+  match /settings/{id} {
+   allow get: if id == 'system' || admin();
+   allow list, write: if admin();
+  }
+  match /questions/{id} { allow read, write: if admin(); }
+  match /questionKeys/{id} { allow read, write: if admin(); }
+  match /employees/{id} {
+   allow get: if signed();
+   allow list, write: if admin();
+  }
+  // Published exam content is readable for browser grading. The private bank stays admin-only.
+  match /exams/{e} {
+   allow get: if true;
+   allow list, write: if admin();
+   match /locks/{id} {
+    allow get: if signed();
+    allow list, update, delete: if admin();
+    allow create: if admin() || (own(request.resource.data) && open(e)
+     && request.resource.data.keys().hasOnly(['uid','employeeId']) && request.resource.data.employeeId == id
+     && getAfter(/databases/$(database)/documents/exams/$(e)/sessions/$(request.auth.uid)).data.employeeId == id);
+   }
+   match /sessions/{uid} {
+    allow get: if admin() || (signed() && request.auth.uid == uid);
+    allow list, delete: if admin();
+    allow create: if admin() || (signed() && uid == request.auth.uid && own(request.resource.data)
+     && request.resource.data.keys().hasOnly(['uid','examId','employeeId'])
+     && request.resource.data.examId == e && open(e));
+    allow update: if admin() || (signed() && uid == request.auth.uid && request.resource.data == resource.data);
+   }
+   match /attempts/{id} {
+    allow get: if admin() || (signed() && (!exists(/databases/$(database)/documents/exams/$(e)/attempts/$(id)) || own(resource.data)));
+    allow list, delete: if admin();
+    allow create: if admin() || (own(request.resource.data) && bound(e,id) && open(e)
+     && request.resource.data.employeeId == id && request.resource.data.examId == e
+     && request.resource.data.status == 'in_progress' && request.resource.data.result == null
+     && request.resource.data.revision == 0
+     && request.resource.data.startedAt is number && request.resource.data.deadline is number
+     && request.resource.data.startedAt >= request.time.toMillis() - 120000
+     && request.resource.data.startedAt <= request.time.toMillis() + 120000
+     && request.resource.data.deadline == request.resource.data.startedAt + exam(e).config.durationMinutes * 60000
+     && get(/databases/$(database)/documents/employees/$(id)).data.get('active',true) != false);
+    allow update: if admin() || (own(resource.data) && own(request.resource.data)
+     && resource.data.status == 'in_progress'
+     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','result','submittedAt','updatedAt','revision'])
+     && request.resource.data.revision >= resource.data.revision && request.resource.data.revision <= resource.data.revision + 1
+     && (request.resource.data.status == 'completed'
+      || (request.resource.data.status == 'in_progress' && request.resource.data.result == null && request.time.toMillis() <= resource.data.deadline)));
+   }
+   match /answers/{id} {
+    allow get: if admin() || (signed() && (!exists(/databases/$(database)/documents/exams/$(e)/answers/$(id)) || own(resource.data)));
+    allow list, delete: if admin();
+    allow create: if admin() || (own(request.resource.data) && bound(e,id) && open(e)
+     && request.resource.data.keys().hasOnly(['uid','paper','answers'])
+     && request.resource.data.paper is list && request.resource.data.answers is map
+     && request.resource.data.paper.size() == exam(e).config.questionCount);
+    allow update: if admin() || (own(resource.data) && own(request.resource.data)
+     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['answers'])
+     && request.resource.data.answers is map
+     && get(/databases/$(database)/documents/exams/$(e)/attempts/$(id)).data.status == 'in_progress'
+     && request.time.toMillis() <= get(/databases/$(database)/documents/exams/$(e)/attempts/$(id)).data.deadline);
+   }
+  }
+ }
+}
