@@ -1,3 +1,7 @@
+// Academy exams: public settings/system, catalogue metadata, and appearance.
+// Bank/employees/exams/roster remain writable only by the fixed admin account.
+// Per-exam locks and immutable sessions enforce one attempt per employee/exam.
+// Attempts and answers remain readable only by their owner and the admin.
 rules_version = '2';
 service cloud.firestore {
  match /databases/{database}/documents {
@@ -11,14 +15,71 @@ service cloud.firestore {
     && request.time.toMillis() >= x.config.startsAt
     && (x.config.closesAt == null || request.time.toMillis() < x.config.closesAt);
   }
+  function eligible(e,id) { let target=exam(e).config.get('targetAudience','all'); let employee=get(/databases/$(database)/documents/employees/$(id)).data; return target=='all' || target in employee.get('categories',[employee.get('category','general')]); }
   function bound(e, id) {
    return signed()
     && getAfter(/databases/$(database)/documents/exams/$(e)/locks/$(id)).data.uid == request.auth.uid
     && getAfter(/databases/$(database)/documents/exams/$(e)/sessions/$(request.auth.uid)).data.employeeId == id;
   }
+
+  function timed(e) { return exam(e).config.get('questionTiming',{}).get('enabled',false)==true; }
+  function questionSeconds(e,d,n) {
+   let q=exam(e).pool[d.paper[n].poolIndex];
+   return q.type=='tf'?exam(e).config.questionTiming.tfSeconds:exam(e).config.questionTiming.mcqSeconds;
+  }
+  function cappedDeadline(e,id,start,seconds) {
+   let total=getAfter(/databases/$(database)/documents/exams/$(e)/attempts/$(id)).data.deadline;
+   let finish=start+seconds*1000; return finish<total?finish:total;
+  }
+  function initialClock(e,id,d) {
+   let attempt=getAfter(/databases/$(database)/documents/exams/$(e)/attempts/$(id)).data;
+   return d.questionDeadlines is map && d.questionDeadlines.keys().hasOnly(['0']) && d.questionDeadlines.size()==1
+    && d.openedQuestion==0 && d.questionDeadlines['0']==cappedDeadline(e,id,attempt.startedAt,questionSeconds(e,d,0));
+  }
+  function openQuestionClock(e,id) {
+   let d=request.resource.data; let before=resource.data.get('questionDeadlines',{}); let after=d.questionDeadlines;
+   let n=d.openedQuestion; let key=string(n);
+   return d.diff(resource.data).affectedKeys().hasOnly(['questionDeadlines','openedQuestion'])
+    && n is int && n>=0 && n<d.paper.size() && after is map && !(key in before)
+    && after.size()==before.size()+1 && after.diff(before).affectedKeys().hasOnly([key])
+    && after[key] is number
+    && after[key]>=cappedDeadline(e,id,request.time.toMillis()-5000,questionSeconds(e,d,n))
+    && after[key]<=cappedDeadline(e,id,request.time.toMillis()+2000,questionSeconds(e,d,n));
+  }
+  function timedAnswer() {
+   let n=request.resource.data.get('answeredQuestion',-1); let key=string(n);
+   return n is int && n>=0 && n<resource.data.paper.size()
+    && key in resource.data.questionDeadlines && request.time.toMillis()<resource.data.questionDeadlines[key]
+    && request.resource.data.answers.diff(resource.data.answers).affectedKeys().hasOnly([key])
+    && request.resource.data.answers[key] is int && request.resource.data.answers[key]>=0
+    && request.resource.data.answers[key]<resource.data.paper[n].optionOrder.size();
+  }
+
+  function color(v) { return v is string && v.matches('^#[0-9A-Fa-f]{6}$'); }
+  function validAppearance(d) {
+   return d.keys().hasAll(['siteName','tagline','footerText','primary','secondary','background','surface','text','muted','border','bannerStart','bannerEnd','bannerText','bannerKicker','bannerTitle','bannerDescription','bannerImage','bannerLayout','bannerPosition','bannerOverlay','logo','fontFamily','fontData','fontSize','headingSize','radius','contentWidth','buttonStyle','density','shadow','showStats','showSteps','cardLayout'])
+    && d.keys().hasOnly(['siteName','tagline','footerText','primary','secondary','background','surface','text','muted','border','bannerStart','bannerEnd','bannerText','bannerKicker','bannerTitle','bannerDescription','bannerImage','bannerLayout','bannerPosition','bannerOverlay','logo','fontFamily','fontData','fontSize','headingSize','radius','contentWidth','buttonStyle','density','shadow','showStats','showSteps','cardLayout'])
+    && d.siteName is string && d.siteName.size()>0 && d.siteName.size()<=160
+    && d.tagline is string && d.tagline.size()<=160 && d.footerText is string && d.footerText.size()<=160
+    && d.bannerTitle is string && d.bannerTitle.size()>0 && d.bannerTitle.size()<=110
+    && d.bannerKicker is string && d.bannerKicker.size()<=160 && d.bannerDescription is string && d.bannerDescription.size()<=500
+    && color(d.primary) && color(d.secondary) && color(d.background) && color(d.surface) && color(d.text) && color(d.muted) && color(d.border) && color(d.bannerStart) && color(d.bannerEnd) && color(d.bannerText)
+    && d.bannerLayout in ['split','cover','minimal'] && d.bannerPosition in ['center','left','right']
+    && d.fontFamily in ['tajawal','system','tahoma','arial','custom'] && d.buttonStyle in ['rounded','pill','square'] && d.density in ['comfortable','compact'] && d.cardLayout in ['grid','list']
+    && d.fontSize is number && d.fontSize>=14 && d.fontSize<=20 && d.headingSize is number && d.headingSize>=30 && d.headingSize<=64
+    && d.radius is number && d.radius>=0 && d.radius<=30 && d.contentWidth is number && d.contentWidth>=1080 && d.contentWidth<=1480
+    && d.bannerOverlay is number && d.bannerOverlay>=0 && d.bannerOverlay<=85
+    && d.shadow is bool && d.showStats is bool && d.showSteps is bool
+    && d.bannerImage is string && d.bannerImage.size()<=450000 && (d.bannerImage=='' || d.bannerImage.matches('^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$'))
+    && d.logo is string && d.logo.size()<=110000 && (d.logo=='' || d.logo.matches('^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$'))
+    && d.fontData is string && d.fontData.size()<=220000 && (d.fontData=='' || d.fontData.matches('^data:font/(woff2|woff);base64,[A-Za-z0-9+/=]+$'))
+    && (d.fontFamily!='custom' || d.fontData!='');
+  }
+  function validCatalogue(d) { return d.keys().hasAll(['version','exams','updatedAt']) && d.keys().hasOnly(['version','exams','updatedAt']) && d.version==2 && d.exams is list && d.exams.size()<=1000 && d.updatedAt is number; }
   match /settings/{id} {
-   allow get: if id == 'system' || admin();
-   allow list, write: if admin();
+   allow get: if id in ['system','catalogue','appearance'] || admin();
+   allow list, delete: if admin();
+   allow create, update: if admin() && (id=='appearance'?validAppearance(request.resource.data):id=='catalogue'?validCatalogue(request.resource.data):true);
   }
   match /questions/{id} { allow read, write: if admin(); }
   match /questionKeys/{id} { allow read, write: if admin(); }
@@ -56,9 +117,9 @@ service cloud.firestore {
      && request.resource.data.startedAt >= request.time.toMillis() - 120000
      && request.resource.data.startedAt <= request.time.toMillis() + 120000
      && request.resource.data.deadline == request.resource.data.startedAt + exam(e).config.durationMinutes * 60000
-     && get(/databases/$(database)/documents/employees/$(id)).data.get('active',true) != false);
+     && get(/databases/$(database)/documents/employees/$(id)).data.get('active',true) != false && eligible(e,id));
     allow update: if admin() || (own(resource.data) && own(request.resource.data)
-     && resource.data.status == 'in_progress'
+     && resource.data.status == 'in_progress' && exam(e).status != 'deleting'
      && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','result','submittedAt','updatedAt','revision'])
      && request.resource.data.revision >= resource.data.revision && request.resource.data.revision <= resource.data.revision + 1
      && (request.resource.data.status == 'completed'
@@ -68,12 +129,13 @@ service cloud.firestore {
     allow get: if admin() || (signed() && (!exists(/databases/$(database)/documents/exams/$(e)/answers/$(id)) || own(resource.data)));
     allow list, delete: if admin();
     allow create: if admin() || (own(request.resource.data) && bound(e,id) && open(e)
-     && request.resource.data.keys().hasOnly(['uid','paper','answers'])
+     && request.resource.data.keys().hasOnly(['uid','paper','answers','questionDeadlines','openedQuestion','answeredQuestion'])
      && request.resource.data.paper is list && request.resource.data.answers is map
-     && request.resource.data.paper.size() == exam(e).config.questionCount);
+     && request.resource.data.paper.size() == exam(e).config.questionCount
+     && (!timed(e) || initialClock(e,id,request.resource.data)));
     allow update: if admin() || (own(resource.data) && own(request.resource.data)
-     && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['answers'])
-     && request.resource.data.answers is map
+     && ((request.resource.data.diff(resource.data).affectedKeys().hasOnly(['answers','answeredQuestion']) && (!timed(e) || timedAnswer())) || (timed(e) && openQuestionClock(e,id)))
+     && request.resource.data.answers is map && exam(e).status != 'deleting'
      && get(/databases/$(database)/documents/exams/$(e)/attempts/$(id)).data.status == 'in_progress'
      && request.time.toMillis() <= get(/databases/$(database)/documents/exams/$(e)/attempts/$(id)).data.deadline);
    }

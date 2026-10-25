@@ -6,14 +6,27 @@
    ".read": "auth != null && auth.uid === 'meaguwyLbiTWV1jApLftMAUd3Xu2'",
    "$exam": {
     "$uid": {
-     ".write": "auth != null && auth.uid === $uid",
+     ".write": "auth != null && auth.uid === $uid && !root.child('deletedExams').child($exam).exists()",
      ".validate": "newData.hasChildren(['employeeId','state','lastSeen']) && (!data.exists() || newData.child('employeeId').val() === data.child('employeeId').val())",
-     "employeeId": { ".validate": "newData.isString() && newData.val().matches(/^[0-9]{3,12}$/)" },
-     "state": { ".validate": "newData.val() === 'online' || newData.val() === 'offline' || newData.val() === 'submitted'" },
-     "lastSeen": { ".validate": "newData.isNumber() && newData.val() >= now - 120000 && newData.val() <= now + 120000" },
-     "$other": { ".validate": false }
-    }
+     "employeeId": {
+      ".validate": "newData.isString() && newData.val().matches(/^[0-9]{3,12}$/)"
+     },
+     "state": {
+      ".validate": "newData.val() === 'online' || newData.val() === 'offline' || newData.val() === 'submitted'"
+     },
+     "lastSeen": {
+      ".validate": "newData.isNumber() && newData.val() >= now - 120000 && newData.val() <= now + 120000"
+     },
+     "$other": {
+      ".validate": false
+     }
+    },
+    ".write": "auth != null && auth.uid === 'meaguwyLbiTWV1jApLftMAUd3Xu2'"
    }
+  },
+  "deletedExams": {
+   ".read": "auth != null && auth.uid === 'meaguwyLbiTWV1jApLftMAUd3Xu2'",
+   ".write": "auth != null && auth.uid === 'meaguwyLbiTWV1jApLftMAUd3Xu2'"
   }
  }
 }
